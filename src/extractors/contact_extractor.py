@@ -21,57 +21,58 @@ class ContactExtractor:
     # Padrões de URL para redes sociais válidas (apenas Facebook, Instagram, LinkedIn)
     # Usamos ClassVar para evitar o erro RUF012
     SOCIAL_MEDIA_PATTERNS: ClassVar[dict[str, str]] = {
-        "facebook": r"^(https?://)?(www\.)?facebook\.com/([a-zA-Z0-9\._-]+/?)$",
-        "instagram": r"^(https?://)?(www\.)?instagram\.com/([a-zA-Z0-9\._-]+/?)$",
-        "linkedin": r"^(https?://)?(www\.)?linkedin\.com/(in|company)/([a-zA-Z0-9\._-]+/?)$",
+        "facebook": r"^(https?://)?(www\.)?facebook\.com/(?!groups/|events/|pages/|marketplace/|ads/|business/|help/|login/|watch/|gaming/|careers/|policies/|privacy/|terms/|security/|settings/|notifications/|messages/|bookmarks/|saved/|friends/|requests/|fundraisers/|weather/|games/|jobs/|live/|latest/|developers/|platform/|instantarticles/|audience_network/|messenger/|instagram/|whatsapp/|workplace/|oculus/|portal/|sparkar/|horizon/|metaverse/|ai/|research/|news/|blog/|about/|contact/|press/|investor/|partners/|community/|sharer\.php|plugins/)([a-zA-Z0-9\._-]+|profile\.php\?id=\d+)",
+        "instagram": r"^(https?://)?(www\.)?instagram\.com/(?!p/|reel/|tv/|explore/|stories/|accounts/|direct/|developer/|about/|legal/)([a-zA-Z0-9\._-]+)",
+        "linkedin": r"^(https?://)?(www\.)?linkedin\.com/(in|company)/([a-zA-Z0-9\._-]+)",
     }
 
-    # Domínios de redes sociais que queremos ignorar completamente
+    # Domínios de redes sociais a serem ignorados (Twitter, TikTok, WhatsApp, YouTube)
+    # Usamos ClassVar para evitar o erro RUF012
     IGNORED_SOCIAL_MEDIA_DOMAINS: ClassVar[list[str]] = [
         "twitter.com",
-        "t.co",  # Redirecionador comum do Twitter
+        "t.co",  # Shortened Twitter links
         "tiktok.com",
-        "wa.me",  # WhatsApp
-        "youtube.com",  # Adicionado para ignorar YouTube
-        "olx.com.br",  # Adicionado para ignorar OLX
-        "static.olx.com.br",  # Adicionado para ignorar assets da OLX
+        "wa.me",  # WhatsApp direct links
+        "youtube.com",
+        "youtu.be",  # Shortened YouTube links
     ]
 
-    def extract_emails(self, soup: BeautifulSoup) -> list[str]:
-        """Extrai endereços de e-mail de um objeto BeautifulSoup."""
-        emails = set()
-        # Expressão regular para encontrar e-mails
-        email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
-        text = soup.get_text()
-        found_emails = re.findall(email_pattern, text)
-        for email in found_emails:
-            # Filtra e-mails que são provavelmente de assets ou links inválidos
-            if not any(
-                ext in email.lower() for ext in [".png", ".jpg", ".gif", ".css", ".js"]
-            ):
-                emails.add(email)
-        return list(emails)
+    # Padrão para extrair e-mails
+    EMAIL_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+    )
+
+    def extract_all(self, html_content: str, text_content: str) -> Contact:
+        """
+        Extrai todos os contatos (e-mails e perfis sociais) de um conteúdo HTML e de texto.
+        """
+        soup = BeautifulSoup(html_content, "html.parser")
+        emails = self.extract_emails(text_content)
+        social_profiles = self._extract_social_profiles(soup)
+        return Contact(emails=emails, social_profiles=social_profiles)
+
+    def extract_emails(self, text_content: str) -> list[str]:
+        """Extrai endereços de e-mail de um texto."""
+        return list(set(self.EMAIL_PATTERN.findall(text_content)))
 
     def _extract_social_profiles(self, soup: BeautifulSoup) -> dict[str, str]:
         """Extrai URLs de perfis de redes sociais de um objeto BeautifulSoup."""
         social_profiles = {}
-        for link in soup.find_all("a", href=True):
-            url = link["href"]
+        found_urls = set()
+
+        for link_tag in soup.find_all("a", href=True):
+            url = link_tag["href"]
+            if url in found_urls:
+                continue
+            found_urls.add(url)
+
             # Ignorar domínios indesejados
             if any(domain in url for domain in self.IGNORED_SOCIAL_MEDIA_DOMAINS):
                 continue
 
             for platform, pattern in self.SOCIAL_MEDIA_PATTERNS.items():
                 if re.match(pattern, url):
-                    # Adiciona apenas o primeiro perfil encontrado para cada plataforma
-                    if platform not in social_profiles:
-                        social_profiles[platform] = url
-                        logger.debug(f"Found social profile: {platform}: {url}")
-                    break  # Sai do loop de plataformas para evitar duplicação
-        return social_profiles
+                    social_profiles[platform] = url
+                    break  # Encontrou um perfil, passa para o próximo link
 
-    def extract_contacts(self, soup: BeautifulSoup) -> Contact:
-        """Extrai todos os contatos (e-mails e redes sociais) de um objeto BeautifulSoup."""
-        emails = self.extract_emails(soup)
-        social_profiles = self._extract_social_profiles(soup)
-        return Contact(emails=emails, social_profiles=social_profiles)
+        return social_profiles
