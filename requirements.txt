@@ -1,0 +1,9 @@
+httpx
+beautifulsoup4
+lxml
+loguru
+httpx
+pydantic
+beautifulsoup4
+lxml
+streamlit
