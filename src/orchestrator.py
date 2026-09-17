@@ -1,106 +1,64 @@
-"""Orquestrador principal: busca na web, crawling e extração de contatos de fornecedores."""
+# src/orchestrator.py
 
-import asyncio
 import logging
 
-from src.extractors.contact_extractor import ContactExtractor
-from src.filters.relevance_filter import RelevanceFilter
-from src.http_client import HttpClient
-from src.models import ContactInfo, Supplier
-from src.scrapers.multi_search_scraper import MultiSearchScraper
-from src.scrapers.site_crawler import SiteCrawler
-from src.storage.csv_storage import CSVStorage
+from src.extractors.contact_extractor import Contact, ContactExtractor
+from src.extractors.info_extractor import InfoExtractor
+from src.models import Supplier  # Assuming Supplier is defined here or imported
+from src.scrapers.google_scraper import GoogleScraper
+from src.scrapers.olx_scraper import OLXScraper
 
 logger = logging.getLogger(__name__)
 
 
-class SupplierFinderOrchestrator:
-    """Coordena busca (múltiplos motores), filtro de relevância, crawling e extração de contatos."""
-
+class Orchestrator:
     def __init__(self):
-        self.http_client = HttpClient()
-        self.search_scraper = MultiSearchScraper(self.http_client)
-        self.site_crawler = SiteCrawler(self.http_client)
+        self.google_scraper = GoogleScraper()
+        self.olx_scraper = OLXScraper()
+        self.info_extractor = InfoExtractor()
         self.contact_extractor = ContactExtractor()
-        self.storage = CSVStorage()
-        self.relevance_filter = RelevanceFilter()
 
     async def find_suppliers(
-        self,
-        product_query: str,
-        state: str | None = None,
-        max_results: int = 5,
+        self, product: str, state: str, max_results: int
     ) -> list[Supplier]:
-        """Busca fornecedores para um produto (opcionalmente filtrado por estado)."""
-        full_query = f"{product_query} em {state}" if state else product_query
-        logger.info("Iniciando busca de fornecedores para: '%s'", full_query)
+        search_query = f"{product} {state}"
+        logger.info(f"Iniciando busca por: {search_query}")
 
-        raw_results = await self.search_scraper.search(
-            full_query, max_results=max_results * 2
-        )
-        filtered_results = self.relevance_filter.filter_results(raw_results)
-        search_results = filtered_results[:max_results]
-
-        logger.info(
-            "Resultados brutos: %d | Após filtro de relevância: %d | Usados: %d",
-            len(raw_results),
-            len(filtered_results),
-            len(search_results),
-        )
+        # Busca no Google
+        google_results = await self.google_scraper.search(search_query, max_results)
+        logger.info(f"Encontrados {len(google_results)} resultados no Google.")
 
         suppliers: list[Supplier] = []
-        for result in search_results:
-            website = result["url"]
-            title = result["title"]
+        for result in google_results:
+            # Extrair informações da página do fornecedor
+            page_content = await self.info_extractor.fetch_page_content(result.link)
+            if page_content:
+                html_content, text_content = page_content
 
-            html, text = await self.site_crawler.crawl(website)
-            if not html:
-                logger.warning("Nenhum conteúdo coletado para %s, pulando.", website)
-                continue
-
-            extracted = self.contact_extractor.extract_all(html, text)
-            contact = ContactInfo(
-                emails=extracted["emails"],
-                social_profiles=extracted["social_profiles"],
-            )
-
-            try:
-                supplier = Supplier(name=title, website=website, contact=contact)
-            except ValueError:
-                logger.warning(
-                    "URL inválida para o fornecedor '%s': %s", title, website
+                # Extrair contatos usando o ContactExtractor
+                # Acessar atributos do objeto Contact com notação de ponto
+                extracted_contacts: Contact = self.contact_extractor.extract_all(
+                    html_content, text_content
                 )
-                continue
 
-            suppliers.append(supplier)
-            logger.info(
-                "Fornecedor processado: %s | E-mails: %s | Redes sociais: %s",
-                supplier.name,
-                contact.emails,
-                list(contact.social_profiles.keys()),
-            )
+                supplier = Supplier(
+                    name=result.title,
+                    site=result.link,
+                    emails=extracted_contacts.emails,  # Correção aqui
+                    social_profiles=extracted_contacts.social_profiles,  # Correção aqui
+                    phone_numbers=[],  # Adicionei um placeholder, se não for extraído
+                    whatsapp_numbers=[],  # Adicionei um placeholder, se não for extraído
+                )
+                suppliers.append(supplier)
+            else:
+                logger.warning(
+                    f"Não foi possível extrair conteúdo da página: {result.link}"
+                )
 
-        if suppliers:
-            self.storage.save(suppliers)
+        # Busca na OLX (se necessário e implementado)
+        # olx_results = await self.olx_scraper.search(search_query, max_results)
+        # for result in olx_results:
+        #     # Processar resultados da OLX de forma similar
+        #     pass
 
         return suppliers
-
-    async def close(self) -> None:
-        """Fecha o cliente HTTP."""
-        await self.http_client.close()
-
-
-async def _demo() -> None:
-    logging.basicConfig(level=logging.INFO)
-    orchestrator = SupplierFinderOrchestrator()
-    try:
-        suppliers = await orchestrator.find_suppliers(
-            "fornecedores de parafusos industriais", state="São Paulo", max_results=5
-        )
-        logger.info("Total de fornecedores encontrados: %d", len(suppliers))
-    finally:
-        await orchestrator.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(_demo())
